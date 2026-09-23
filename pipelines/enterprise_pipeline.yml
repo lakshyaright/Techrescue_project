@@ -1,0 +1,399 @@
+trigger:
+  branches:
+    include:
+      - main
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+
+  terraformVersion: '1.9.8'
+
+  workingDirectory: 'infrastructure/terraform/environments/dev'
+
+  azureServiceConnection: 'sc-techrescue-dev'
+
+  tfplanFile: 'tfplan'
+
+stages:
+
+# ============================================================
+# 1. SECURITY / STATIC ANALYSIS
+# ============================================================
+
+- stage: Security
+  displayName: "Security Scanning"
+
+  jobs:
+
+  - job: IaCSecurity
+
+    displayName: "Infrastructure Security Scan"
+
+    steps:
+
+    - checkout: self
+
+    # --------------------------------------------
+    # Terraform
+    # --------------------------------------------
+
+    - task: TerraformInstaller@1
+      displayName: "Install Terraform"
+
+      inputs:
+        terraformVersion: $(terraformVersion)
+
+
+    # --------------------------------------------
+    # Terraform formatting
+    # --------------------------------------------
+
+    - script: |
+        terraform fmt -check -recursive
+      displayName: "Terraform Format Check"
+
+
+    # --------------------------------------------
+    # Terraform validation
+    # --------------------------------------------
+
+    - script: |
+        cd $(workingDirectory)
+
+        terraform init \
+          -backend=false \
+          -input=false
+
+        terraform validate
+
+      displayName: "Terraform Validate"
+
+
+    # --------------------------------------------
+    # TFLint
+    # --------------------------------------------
+
+    - bash: |
+
+        curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh \
+        | bash
+
+        tflint --version
+
+        cd $(workingDirectory)
+
+        tflint --init
+
+        tflint
+
+      displayName: "TFLint"
+
+
+    # --------------------------------------------
+    # Checkov
+    # --------------------------------------------
+
+    - bash: |
+
+        pip install checkov
+
+        checkov \
+          -d infrastructure/terraform \
+          --framework terraform \
+          --output junitxml \
+          --output-file-path checkov-results.xml
+
+      displayName: "Checkov IaC Security Scan"
+
+      continueOnError: false
+
+
+    # --------------------------------------------
+    # TruffleHog
+    # --------------------------------------------
+
+    - bash: |
+
+        docker run --rm \
+          -v "$(Build.SourcesDirectory):/repo" \
+          trufflesecurity/trufflehog:latest \
+          filesystem /repo \
+          --results=verified
+
+      displayName: "Secret Scan"
+
+
+    # --------------------------------------------
+    # Publish Checkov result
+    # --------------------------------------------
+
+    - task: PublishTestResults@2
+
+      displayName: "Publish Security Results"
+
+      inputs:
+        testResultsFormat: JUnit
+        testResultsFiles: '**/checkov-results.xml'
+        failTaskOnFailedTests: true
+
+
+# ============================================================
+# 2. TERRAFORM PLAN
+# ============================================================
+
+- stage: Plan
+
+  displayName: "Terraform Plan"
+
+  dependsOn: Security
+
+  condition: succeeded()
+
+  jobs:
+
+  - job: TerraformPlan
+
+    steps:
+
+    - checkout: self
+
+    - task: TerraformInstaller@1
+
+      inputs:
+        terraformVersion: $(terraformVersion)
+
+
+    - task: AzureCLI@2
+
+      displayName: "Terraform Init"
+
+      inputs:
+
+        azureSubscription: $(azureServiceConnection)
+
+        scriptType: bash
+
+        scriptLocation: inlineScript
+
+        workingDirectory: $(workingDirectory)
+
+        inlineScript: |
+
+          terraform init \
+            -input=false
+
+
+    - task: AzureCLI@2
+
+      displayName: "Terraform Plan"
+
+      inputs:
+
+        azureSubscription: $(azureServiceConnection)
+
+        scriptType: bash
+
+        scriptLocation: inlineScript
+
+        workingDirectory: $(workingDirectory)
+
+        inlineScript: |
+
+          terraform plan \
+            -input=false \
+            -out=$(tfplanFile)
+
+
+    - publish: $(workingDirectory)/$(tfplanFile)
+
+      artifact: terraform-plan
+
+
+# ============================================================
+# 3. DEV DEPLOYMENT
+# ============================================================
+
+- stage: Dev
+
+  displayName: "Deploy DEV"
+
+  dependsOn: Plan
+
+  condition: succeeded()
+
+  jobs:
+
+  - deployment: DeployDev
+
+    environment: "techrescue-dev"
+
+    strategy:
+
+      runOnce:
+
+        deploy:
+
+          steps:
+
+          - checkout: self
+
+          - task: TerraformInstaller@1
+
+            inputs:
+              terraformVersion: $(terraformVersion)
+
+
+          - task: AzureCLI@2
+
+            displayName: "Terraform Apply"
+
+            inputs:
+
+              azureSubscription: $(azureServiceConnection)
+
+              scriptType: bash
+
+              scriptLocation: inlineScript
+
+              workingDirectory: $(workingDirectory)
+
+              inlineScript: |
+
+                terraform init -input=false
+
+                terraform apply \
+                  -input=false \
+                  -auto-approve
+
+
+# ============================================================
+# 4. UAT
+# ============================================================
+
+- stage: UAT
+
+  displayName: "Deploy UAT"
+
+  dependsOn: Dev
+
+  condition: succeeded()
+
+  variables:
+
+    workingDirectory: 'infrastructure/terraform/environments/uat'
+
+    azureServiceConnection: 'sc-techrescue-uat'
+
+  jobs:
+
+  - deployment: DeployUAT
+
+    environment: "techrescue-uat"
+
+    strategy:
+
+      runOnce:
+
+        deploy:
+
+          steps:
+
+          - checkout: self
+
+          - task: TerraformInstaller@1
+
+            inputs:
+              terraformVersion: $(terraformVersion)
+
+
+          - task: AzureCLI@2
+
+            displayName: "Deploy UAT"
+
+            inputs:
+
+              azureSubscription: $(azureServiceConnection)
+
+              scriptType: bash
+
+              scriptLocation: inlineScript
+
+              workingDirectory: $(workingDirectory)
+
+              inlineScript: |
+
+                terraform init -input=false
+
+                terraform apply \
+                  -input=false \
+                  -auto-approve
+
+
+# ============================================================
+# 5. PRODUCTION
+# ============================================================
+
+- stage: Production
+
+  displayName: "Deploy PRODUCTION"
+
+  dependsOn: UAT
+
+  condition: succeeded()
+
+  variables:
+
+    workingDirectory: 'infrastructure/terraform/environments/prod'
+
+    azureServiceConnection: 'sc-techrescue-prod'
+
+  jobs:
+
+  - deployment: DeployProduction
+
+    environment: "techrescue-production"
+
+    strategy:
+
+      runOnce:
+
+        deploy:
+
+          steps:
+
+          - checkout: self
+
+          - task: TerraformInstaller@1
+
+            inputs:
+              terraformVersion: $(terraformVersion)
+
+
+          - task: AzureCLI@2
+
+            displayName: "Terraform Production Apply"
+
+            inputs:
+
+              azureSubscription: $(azureServiceConnection)
+
+              scriptType: bash
+
+              scriptLocation: inlineScript
+
+              workingDirectory: $(workingDirectory)
+
+              inlineScript: |
+
+                terraform init -input=false
+
+                terraform apply \
+                  -input=false \
+                  -auto-approve
