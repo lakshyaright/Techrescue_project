@@ -42,7 +42,7 @@ services:
   # Frontend Web Client
   techrescue-frontend:
     build:
-      context: .
+      context: ./frontend
       dockerfile: Dockerfile
     container_name: techrescue-frontend
     restart: unless-stopped
