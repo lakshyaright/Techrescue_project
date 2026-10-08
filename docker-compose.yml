@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  # Database Service
+  techrescue-db:
+    image: postgres:16-alpine
+    container_name: techrescue-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: techrescue_user
+      POSTGRES_PASSWORD: techrescue_pass
+      POSTGRES_DB: techrescue_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+      - ./database/seed.sql:/docker-entrypoint-initdb.d/02_seed.sql
+    networks:
+      - techrescue-network
+
+  # Backend REST API Service
+  techrescue-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: techrescue-backend
+    restart: unless-stopped
+    environment:
+      PORT: 5000
+      NODE_ENV: production
+      DATABASE_URL: postgresql://techrescue_user:techrescue_pass@techrescue-db:5432/techrescue_db
+      JWT_SECRET: techrescue_super_secret_jwt_key_2026_production
+      CORS_ORIGIN: "http://localhost:3000"
+    ports:
+      - "5000:5000"
+    depends_on:
+      - techrescue-db
+    networks:
+      - techrescue-network
+
+  # Frontend Web Client
+  techrescue-frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: techrescue-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      - techrescue-backend
+    networks:
+      - techrescue-network
+
+networks:
+  techrescue-network:
+    driver: bridge
+
+volumes:
+  pgdata:
+    driver: local

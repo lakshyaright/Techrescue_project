@@ -1,0 +1,6 @@
+{
+  "name": "TechRescue - Enterprise IT Support & Expert Marketplace",
+  "description": "Enterprise IT support & expert marketplace connecting organizations with verified remote IT architects and on-site field engineers.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
