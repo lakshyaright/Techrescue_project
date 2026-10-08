@@ -1,42 +1,31 @@
-# TechRescue Frontend Client (React 19 + Vite + Tailwind CSS)
+# TechRescue Frontend Client (Azure VM Nginx Deployment)
 
-High-density, enterprise-grade React web client for the TechRescue IT Support & Expert Marketplace platform.
-
----
-
-## 1. Features & Capabilities
-
-- **Multi-Role Workspaces**:
-  - **Client**: Raise Query 3-step wizard, Track Incident, Align Experts, Field Dispatch, Escrow Payment Release, History, Activity.
-  - **Remote Expert**: Incident Pool, Atomic Concurrency Claim, Work Logs, Diagnostics, Earnings, Rating.
-  - **Field Engineer**: Proximity Map, Metro Hubs (Mumbai, NCR, Bangalore, Pune), Travel / On-Site check-in, Equipment verification.
-  - **Admin**: Executive KPI counters (12,450 users, ₹25.4L GMV), Supervisory Override, SLA Analytics, Immutable Audit Trail.
-- **Top Bar Contract Compliant**: Clean 3-zone header, zero-pill metadata discipline, typographic separators.
-- **Responsive SVG Charts**: Daily incident influx, MTTR severity breakdown, layer distribution.
-- **Live Demo Switcher**: Floating banner allows instant 1-click toggling between Client Sonu, Expert Rahul, Field Engineer Rajesh, and Admin Lakshya.
+High-density, enterprise-grade React 19 + Vite web client configured for **Azure VM hosting with Nginx**, and **Azure Application Gateway** public delivery.
 
 ---
 
-## 2. Getting Started
+## 1. Architecture on Azure VM
 
-### Installation
+On the Frontend Virtual Machine (`techrescue-vm-frontend`):
+- **Web Server**: Nginx serves the built static production assets from `/var/www/techrescue/frontend/dist`.
+- **SPA Routing**: HTML5 pushState fallback (`try_files $uri $uri/ /index.html;`) ensures direct URLs to `/client/dashboard`, `/expert/jobs`, etc., resolve properly.
+- **API Routing**:
+  - In direct mode: Nginx proxy-passes `/api/` traffic to the Backend VM private IP (`proxy_pass http://10.0.2.4:5000;`).
+  - In Gateway mode: Azure Application Gateway routes `/api/*` directly to the Backend VM pool.
+- **Probe Handler**: Nginx serves `location = /health { return 200 "OK\n"; }` for Azure Application Gateway probes.
+
+---
+
+## 2. Automated VM Setup
+
+On your Ubuntu 22.04 LTS Frontend VM:
 ```bash
-npm install
+sudo bash deploy/scripts/setup-frontend-vm.sh
 ```
 
-### Development Server
-```bash
-npm run dev
-```
-Runs Vite development server on `http://localhost:3000`.
-
-### Type Checking & Linting
-```bash
-npm run lint
-```
-
-### Production Build
-```bash
-npm run build
-```
-Creates optimized static production bundle in `dist/`.
+This script:
+1. Installs Node.js 20 LTS and Nginx.
+2. Clones/pulls the repository into `/var/www/techrescue`.
+3. Runs `npm install && npm run build`.
+4. Copies `deploy/nginx/techrescue-frontend.conf` to `/etc/nginx/sites-available/`.
+5. Enables the site and restarts Nginx.

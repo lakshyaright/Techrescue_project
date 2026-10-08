@@ -1,77 +1,71 @@
-# TechRescue Deployment & DevOps Guide
+# TechRescue Production Deployment Guide: Azure 2-VM Monolithic Architecture
 
-This guide covers deploying TechRescue using **Docker Compose**, **Kubernetes / Cloud Run**, and setting up automated CI/CD pipelines.
-
----
-
-## 1. Multi-Container Deployment via Docker Compose
-
-Run the complete multi-tier stack locally or on a virtual machine:
-
-```bash
-docker-compose up --build -d
-```
-
-This launches:
-1. `techrescue-db`: PostgreSQL 16 on port `5432` with automated schema initialization.
-2. `techrescue-backend`: Node.js Express API on port `5000`.
-3. `techrescue-frontend`: React Vite SPA on port `3000`.
-
-To monitor runtime logs:
-```bash
-docker-compose logs -f
-```
-
-To stop all services:
-```bash
-docker-compose down -v
-```
+This document describes deploying TechRescue on **two Azure Virtual Machines (Frontend VM + Backend VM)**, an **Azure Database for PostgreSQL Flexible Server**, and an **Azure Application Gateway** with path-based routing.
 
 ---
 
-## 2. Environment Configuration
+## 1. Architectural Overview
 
-Ensure production environment secrets are injected via secure secret managers (e.g. AWS Secrets Manager, Google Secret Manager, Azure Key Vault):
-
-| Variable | Description | Production Example |
-| :--- | :--- | :--- |
-| `DATABASE_URL` | PostgreSQL connection string | `postgresql://user:pass@db-cluster.internal:5432/techrescue_prod` |
-| `JWT_SECRET` | 256-bit cryptographically random key | High-entropy random hex |
-| `PORT` | API listen port | `5000` |
-| `CORS_ORIGIN` | Allowed web domain | `https://app.techrescue.io` |
+```
+                      INTERNET
+                         │
+                         ▼ HTTPS (443) / HTTP (80)
+            ┌──────────────────────────────┐
+            │  Azure Application Gateway   │
+            │  Public IP: 20.x.x.x         │
+            └──────────────┬───────────────┘
+                           │
+       ┌───────────────────┴───────────────────┐
+       │ Path: /*                              │ Path: /api/*
+       ▼                                       ▼
+┌─────────────────────────────┐         ┌─────────────────────────────┐
+│    VM 1: Frontend VM        │         │     VM 2: Backend VM        │
+│  - Ubuntu 22.04 LTS         │         │  - Ubuntu 22.04 LTS         │
+│  - IP: 10.0.1.4             │         │  - IP: 10.0.2.4             │
+│  - Nginx web server (:80)   │         │  - Node.js API (:5000)      │
+│  - React Production Bundle  │         │  - systemd service          │
+└─────────────────────────────┘         └──────────────┬──────────────┘
+                                                       │
+                                                       ▼ SSL (:5432)
+                                        ┌─────────────────────────────┐
+                                        │ Azure Database for          │
+                                        │ PostgreSQL Flexible Server  │
+                                        │ (techrescue_db)             │
+                                        └─────────────────────────────┘
+```
 
 ---
 
-## 3. Production CI/CD Pipeline (GitHub Actions Example)
+## 2. Resource Provisioning Plan
 
-```yaml
-name: TechRescue CI/CD
+| Azure Resource | Purpose | Recommended SKU / Sizing | Subnet / Placement |
+| :--- | :--- | :--- | :--- |
+| **Virtual Network** | Isolated private network | `10.0.0.0/16` | Region: Central India / East US |
+| **Application Gateway** | SSL Termination & Path Routing | `Standard_v2` (Auto-scaling 1-5) | `AppGatewaySubnet` (`10.0.0.0/24`) |
+| **Frontend VM** | Nginx static server | `Standard_B2s` (2 vCPU, 4GB RAM) | `FrontendSubnet` (`10.0.1.0/24`) |
+| **Backend VM** | Node.js Express API | `Standard_B2ms` (2 vCPU, 8GB RAM) | `BackendSubnet` (`10.0.2.0/24`) |
+| **PostgreSQL Flexible** | Persistent relational data | `Standard_B1ms` or `Standard_D2ds_v5` | `DatabaseSubnet` (`10.0.3.0/24`) |
 
-on:
-  push:
-    branches: [ main ]
+---
 
-jobs:
-  build-and-test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
+## 3. Azure Application Gateway Configuration
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: '20'
+Path-based routing rules redirect traffic seamlessly:
+1. **Frontend Rule (`/*`)**: Routes to `techrescue-frontend-pool` (`10.0.1.4:80`).
+2. **Backend API Rule (`/api/*`)**: Routes to `techrescue-backend-pool` (`10.0.2.4:5000`).
 
-      - name: Install Frontend Dependencies
-        run: npm ci
+Both pools are configured with active **Health Probes** querying `/health`:
+- Frontend Probe: `http://10.0.1.4/health` returns `200 OK`.
+- Backend Probe: `http://10.0.2.4:5000/health` returns `200 OK` with database connection telemetry.
 
-      - name: Lint & Typecheck
-        run: npm run lint
+For detailed portal and Azure CLI setup commands, refer to [`deploy/azure-application-gateway.md`](../deploy/azure-application-gateway.md).
 
-      - name: Build Production Frontend
-        run: npm run build
+---
 
-      - name: Build Docker Images
-        run: |
-          docker build -t techrescue-frontend:latest .
-```
+## 4. Automation Scripts Included
+
+- **Frontend VM Script**: [`deploy/scripts/setup-frontend-vm.sh`](../deploy/scripts/setup-frontend-vm.sh)
+- **Backend VM Script**: [`deploy/scripts/setup-backend-vm.sh`](../deploy/scripts/setup-backend-vm.sh)
+- **Azure PostgreSQL Script**: [`deploy/scripts/setup-azure-postgres.sh`](../deploy/scripts/setup-azure-postgres.sh)
+- **Nginx Configuration**: [`deploy/nginx/techrescue-frontend.conf`](../deploy/nginx/techrescue-frontend.conf)
+- **Systemd Service**: [`deploy/systemd/techrescue-backend.service`](../deploy/systemd/techrescue-backend.service)
